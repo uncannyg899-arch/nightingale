@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { sendMagicLink, currentUser, signOut } from '@/lib/auth-client';
 
 const CLINIC_ID = '11111111-1111-1111-1111-111111111111';
 const SESSION_ID = '22222222-2222-2222-2222-222222222222';
@@ -10,7 +11,6 @@ interface Msg {
   text: string;
   risk?: 'low' | 'medium' | 'high';
   halt?: boolean;
-  emergencyNumber?: string;
 }
 
 interface Fact {
@@ -31,25 +31,55 @@ export default function Intake() {
   const [busy, setBusy] = useState(false);
   const [facts, setFacts] = useState<Fact[]>([]);
   const [halted, setHalted] = useState<{ number: string } | null>(null);
+
+  const [checklist, setChecklist] = useState<string[] | null>(null);
+  const [email, setEmail] = useState('');
+  const [linkSent, setLinkSent] = useState(false);
+  const [authEmail, setAuthEmail] = useState<string | null>(null);
+  const [authNote, setAuthNote] = useState<string | null>(null);
+
   const endRef = useRef<HTMLDivElement>(null);
+  const exchanges = messages.filter((m) => m.role === 'you').length;
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  async function loadFacts() {
+  const loadFacts = useCallback(async () => {
     try {
       const r = await fetch(`/api/profile?sessionId=${SESSION_ID}`);
       const d = await r.json();
       setFacts(d.facts ?? []);
     } catch {
-      /* profile is supplementary; failure here must not break intake */
+      /* profile is supplementary; never block intake on it */
     }
-  }
+  }, []);
 
   useEffect(() => {
     loadFacts();
-  }, []);
+
+    (async () => {
+      const user = await currentUser();
+      if (!user) return;
+
+      setAuthEmail(user.email ?? null);
+
+      const r = await fetch('/api/convert', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: SESSION_ID, authUserId: user.id }),
+      });
+      const d = await r.json();
+
+      if (d.ok && d.preserved) {
+        setAuthNote(
+          `Signed in. Your conversation carried over: ${d.preserved.messages} messages and ${d.preserved.facts} recorded details, all still linked to their original messages.`
+        );
+      } else if (!d.ok) {
+        setAuthNote(d.error ?? 'Could not link this conversation.');
+      }
+    })();
+  }, [loadFacts]);
 
   async function send() {
     const text = input.trim();
@@ -70,23 +100,15 @@ export default function Intake() {
         }),
       });
       const d = await res.json();
-
       if (!res.ok) throw new Error(d.error ?? 'Request failed');
 
       setMessages((m) => [
         ...m,
-        {
-          role: 'clinic',
-          text: d.reply,
-          risk: d.riskLevel,
-          halt: d.halt,
-          emergencyNumber: d.emergencyNumber,
-        },
+        { role: 'clinic', text: d.reply, risk: d.riskLevel, halt: d.halt },
       ]);
-
       if (d.halt) setHalted({ number: d.emergencyNumber });
       loadFacts();
-    } catch (err) {
+    } catch {
       setMessages((m) => [
         ...m,
         {
@@ -99,18 +121,49 @@ export default function Intake() {
     }
   }
 
+  async function getChecklist() {
+    const r = await fetch(
+      `/api/convert?clinicId=${CLINIC_ID}&sessionId=${SESSION_ID}`
+    );
+    const d = await r.json();
+    setChecklist(d.items ?? []);
+  }
+
+  async function requestLink() {
+    if (!email.trim()) return;
+    const r = await sendMagicLink(email.trim(), SESSION_ID);
+    if (r.ok) {
+      setLinkSent(true);
+      setAuthNote(null);
+    } else {
+      setAuthNote(r.error ?? 'Could not send the link.');
+    }
+  }
+
   return (
     <div className="min-h-screen bg-[#0F3E44] text-[#FBFAF7]">
       <div className="mx-auto flex max-w-5xl flex-col gap-6 px-4 py-8 lg:flex-row">
-        {/* conversation */}
         <main className="flex flex-1 flex-col">
-          <header className="mb-6">
-            <h1 className="text-2xl font-semibold tracking-tight">
-              Klinik Nightingale
-            </h1>
-            <p className="mt-1 text-sm text-[#9DBFC2]">
-              Tell us what is happening. We will route you to the right care.
-            </p>
+          <header className="mb-6 flex items-start justify-between">
+            <div>
+              <h1 className="text-2xl font-semibold tracking-tight">
+                Klinik Nightingale
+              </h1>
+              <p className="mt-1 text-sm text-[#9DBFC2]">
+                Tell us what is happening. We will route you to the right care.
+              </p>
+            </div>
+            {authEmail && (
+              <button
+                onClick={async () => {
+                  await signOut();
+                  window.location.href = '/';
+                }}
+                className="text-sm text-[#9DBFC2] underline"
+              >
+                Sign out
+              </button>
+            )}
           </header>
 
           {halted && (
@@ -121,7 +174,7 @@ export default function Intake() {
               <p className="text-lg font-semibold text-[#FF8A8A]">
                 This needs urgent medical attention
               </p>
-              <p className="mt-2 text-sm leading-relaxed text-[#FBFAF7]">
+              <p className="mt-2 text-sm leading-relaxed">
                 Do not wait for a reply from us. Call emergency services or go
                 to your nearest emergency department now.
               </p>
@@ -132,6 +185,12 @@ export default function Intake() {
                 Call {halted.number}
               </a>
             </div>
+          )}
+
+          {authNote && (
+            <p className="mb-5 rounded border border-[#2A6B72] bg-[#0B3238] px-4 py-3 text-sm text-[#9DBFC2]">
+              {authNote}
+            </p>
           )}
 
           <div className="flex-1 space-y-4">
@@ -159,10 +218,70 @@ export default function Intake() {
               </div>
             ))}
             {busy && (
-              <p className="text-sm text-[#9DBFC2]">Reviewing your message…</p>
+              <p className="text-sm text-[#9DBFC2]">Reviewing your message...</p>
             )}
             <div ref={endRef} />
           </div>
+
+          {exchanges >= 1 && !checklist && !halted && (
+            <button
+              onClick={getChecklist}
+              className="mt-6 self-start rounded-lg border border-[#2A6B72] px-4 py-2.5 text-sm hover:bg-[#0B3238]"
+            >
+              Get a checklist for your visit
+            </button>
+          )}
+
+          {checklist && (
+            <div className="mt-6 rounded-lg border border-[#2A6B72] bg-[#0B3238] p-4">
+              <h2 className="text-sm font-medium">Before you come in</h2>
+              <ul className="mt-3 space-y-2 text-sm text-[#D6E5E6]">
+                {checklist.map((item, i) => (
+                  <li key={i} className="flex gap-2">
+                    <span className="text-[#5FB0B8]">-</span>
+                    {item}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {exchanges >= 2 && !authEmail && !halted && (
+            <div className="mt-5 rounded-lg border border-[#2A6B72] bg-[#0B3238] p-4">
+              {linkSent ? (
+                <p className="text-sm text-[#D6E5E6]">
+                  Check your email for a sign-in link. Opening it brings you
+                  back here with this conversation intact.
+                </p>
+              ) : (
+                <>
+                  <h2 className="text-sm font-medium">Keep this conversation</h2>
+                  <p className="mt-1 text-sm text-[#9DBFC2]">
+                    Add your email so the clinic can follow up and you can pick
+                    this up later. We will send a sign-in link, no password
+                    needed.
+                  </p>
+                  <div className="mt-3 flex gap-2">
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && requestLink()}
+                      placeholder="your@email.com"
+                      className="flex-1 rounded border border-[#2A6B72] bg-[#0F3E44] px-3 py-2 text-sm placeholder:text-[#6D9599] focus:border-[#5FB0B8] focus:outline-none"
+                    />
+                    <button
+                      onClick={requestLink}
+                      disabled={!email.trim()}
+                      className="rounded bg-[#5FB0B8] px-4 py-2 text-sm font-medium text-[#0B3238] disabled:opacity-40"
+                    >
+                      Send link
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           <div className="mt-6 flex gap-2">
             <input
@@ -187,7 +306,6 @@ export default function Intake() {
           </p>
         </main>
 
-        {/* living memory, with visible provenance */}
         <aside className="lg:w-72">
           <h2 className="mb-3 text-sm font-medium text-[#9DBFC2]">
             What we have recorded
@@ -200,18 +318,15 @@ export default function Intake() {
           ) : (
             <ul className="space-y-3">
               {facts.map((f) => (
-                <li
-                  key={f.id}
-                  className="rounded-lg bg-[#17494F] p-3 text-sm"
-                >
+                <li key={f.id} className="rounded-lg bg-[#17494F] p-3 text-sm">
                   <p className="text-xs text-[#9DBFC2]">
                     {f.kind.replace('_', ' ')}
                   </p>
                   <p className="mt-0.5 font-medium">{f.value}</p>
                   {f.citations[0] && (
                     <p className="mt-2 border-l-2 border-[#2A6B72] pl-2 text-xs italic text-[#9DBFC2]">
-                      from: “{f.citations[0].body_raw.slice(0, 60)}
-                      {f.citations[0].body_raw.length > 60 ? '…' : ''}”
+                      from: {f.citations[0].body_raw.slice(0, 60)}
+                      {f.citations[0].body_raw.length > 60 ? '...' : ''}
                     </p>
                   )}
                 </li>
