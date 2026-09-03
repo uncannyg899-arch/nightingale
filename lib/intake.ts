@@ -88,7 +88,7 @@ async function generateReply(
 ): Promise<string> {
   const res = await completeOrNull({
     tier: 'chat',
-    maxTokens: 300,
+    maxTokens: 2000,
     system:
       'You are an intake assistant for a Malaysian clinic. You are NOT a ' +
       'doctor and you must never behave like one.\n\n' +
