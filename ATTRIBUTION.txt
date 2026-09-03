@@ -1,0 +1,15 @@
+﻿# Attribution
+
+AI assistance: Claude (Anthropic) was used throughout for architecture design,
+code generation, regulatory research, and debugging. All design decisions,
+verification, and testing were reviewed by the author.
+
+Frameworks: Next.js, React, Tailwind CSS, Supabase (Postgres).
+LLM: Google Gemini (3.6 Flash, Flash-Lite) via the Gemini API.
+
+Triage framework: Manchester Triage System (Manchester Triage Group, UK, 1994),
+referenced for the risk-level mapping. Not affiliated with or endorsed by MTG.
+
+Regulatory references: Malaysian Medical Act 1971; Medicine Advertisements Board
+guidelines (MAB 1/2023); Personal Data Protection Act 2010 (as amended 2024).
+Cited as publicly available sources; no legal review was obtained.
