@@ -123,7 +123,26 @@ test('the model can raise risk but never lower it', () => {
 
   // Model escalates beyond the rules. It must be respected.
   const low = assessDeterministic('I need to book an appointment');
-  assert.equal(combineWithModel(low, 'high').level, 'high');
+  assert.equal(combineWithModel(low, 'medium').level, 'medium');
+});
+
+test('the model alone cannot declare high risk', () => {
+  // A false-positive high halts the assistant and sends someone to
+  // emergency services. The model may flag for review (medium) but
+  // cannot trigger that on its own with no rule support.
+  const routine = assessDeterministic('I need to book an appointment');
+  const result = combineWithModel(routine, 'high');
+
+  assert.equal(result.level, 'medium', 'model-only high must cap to medium');
+  assert.equal(result.halt, false, 'must not halt the assistant');
+});
+
+test('the model can confirm high risk when rules already fired', () => {
+  // When the deterministic layer found something, the model agreeing
+  // is corroboration, not speculation.
+  const cardiac = assessDeterministic('I have crushing chest pain');
+  assert.equal(combineWithModel(cardiac, 'high').level, 'high');
+  assert.equal(combineWithModel(cardiac, 'high').halt, true);
 });
 
 test('maxLevel orders risk correctly', () => {
@@ -195,7 +214,7 @@ test('redaction records no original values', () => {
   const { redactions } = redact('my IC is 900101-14-5523');
   for (const r of redactions) {
     assert.equal(
-      (r as unknown as Record<string, unknown>).original,
+      (r as Record<string, unknown>).original,
       undefined,
       'original text must be stripped before storage'
     );

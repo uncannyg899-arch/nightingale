@@ -63,10 +63,20 @@ async function modelRiskOpinion(redactedText: string): Promise<RiskLevel | null>
     system:
       'You are a triage classifier for a clinic intake system in Malaysia. ' +
       'You do NOT diagnose and you do NOT give advice. You output only a ' +
-      'risk label. Respond with JSON: {"level":"low"|"medium"|"high"}. ' +
-      'Use "high" for anything suggesting a medical emergency requiring ' +
-      'immediate care. Use "medium" for urgent but non-emergency concerns. ' +
-      'Use "low" for routine enquiries. When uncertain, choose the HIGHER level.',
+      'risk label. Respond with JSON: {"level":"low"|"medium"|"high"}.\n\n' +
+      'high — signs of a medical emergency needing immediate care: ' +
+      'cardiac or stroke symptoms, breathing difficulty, severe bleeding, ' +
+      'loss of consciousness, anaphylaxis, self-harm intent, obstetric ' +
+      'emergency, major trauma.\n' +
+      'medium — urgent but not an emergency: persistent high fever, ' +
+      'severe pain, dehydration, spreading infection, or any concern in ' +
+      'an infant, elderly, or immunocompromised person.\n' +
+      'low — routine: appointment requests, opening hours, repeat ' +
+      'prescriptions, mild or common symptoms with no red flags.\n\n' +
+      'A single mild symptom with no severity indicator is low, not ' +
+      'medium. Do not escalate on the presence of a symptom alone; ' +
+      'escalate on severity, duration, or vulnerability. When a case ' +
+      'sits genuinely between two levels, choose the higher one.',
     prompt: `Message from person: ${redactedText}`,
   });
 
@@ -88,7 +98,7 @@ async function generateReply(
 ): Promise<string> {
   const res = await completeOrNull({
     tier: 'chat',
-    maxTokens: 2000,
+    maxTokens: 1200,
     system:
       'You are an intake assistant for a Malaysian clinic. You are NOT a ' +
       'doctor and you must never behave like one.\n\n' +
@@ -178,8 +188,18 @@ export async function processIntakeMessage(
 
   if (msgErr) throw new Error(`Failed to store message: ${msgErr.message}`);
 
-  // --- model second opinion (can only raise the level) ---
-  const modelLevel = await modelRiskOpinion(redacted);
+  // --- model calls in PARALLEL ---
+  // Risk opinion and fact extraction are independent of each other,
+  // so running them sequentially just adds latency. Neither blocks
+  // the deterministic safety path, which has already completed.
+  const [modelLevel, extracted] = await Promise.all([
+    modelRiskOpinion(redacted),
+    extractFacts(redacted).catch((err) => {
+      console.error('[memory] extraction failed:', (err as Error).message);
+      return [];
+    }),
+  ]);
+
   const risk = combineWithModel(deterministic, modelLevel);
 
   // --- record the assessment (DB trigger blocks any downgrade) ---
@@ -238,21 +258,20 @@ export async function processIntakeMessage(
   }
 
   // --- LIVING MEMORY ---
-  // Runs AFTER escalation on purpose: extracting facts must never
-  // delay an emergency response. If extraction fails, the escalation
-  // has already happened.
-  try {
-    const facts = await extractFacts(redacted);
-    if (facts.length) {
+  // Facts were extracted in parallel above. Persisting happens AFTER
+  // escalation on purpose: writing a profile must never delay an
+  // emergency response.
+  if (extracted.length) {
+    try {
       await applyFacts({
         clinicId: input.clinicId,
         sessionId: input.sessionId,
         messageId: message.id,
-        facts,
+        facts: extracted,
       });
+    } catch (err) {
+      console.error('[memory] persist failed:', (err as Error).message);
     }
-  } catch (err) {
-    console.error('[memory] extraction failed:', (err as Error).message);
   }
 
   // PHI-free audit entry: identifiers only, never content.

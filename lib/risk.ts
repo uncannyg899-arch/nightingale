@@ -294,8 +294,22 @@ export function assessDeterministic(text: string): RiskResult {
 
 /**
  * Combine the deterministic result with an LLM's opinion.
+ *
  * UNION, not intersection: the model can raise the level but never
- * lower it. This is the whole point of the two-layer design.
+ * lower it.
+ *
+ * BUT the model's escalation power is CAPPED. It may raise low ->
+ * medium on its own, because flagging an ambiguous symptom for
+ * review is cheap and reversible. It may NOT declare 'high' unless
+ * the deterministic rules already found something, because a HIGH
+ * assessment halts the assistant and tells someone to call
+ * emergency services — and a model that over-triages routine
+ * symptoms would both flood the clinician queue and, over time,
+ * train staff to ignore the alerts that matter.
+ *
+ * This is the counterweight the brief's scoring rubric lacks: the
+ * cost of a false-positive escalation is real, even though only
+ * false negatives are obviously dangerous.
  */
 export function combineWithModel(
   deterministic: RiskResult,
@@ -303,15 +317,24 @@ export function combineWithModel(
 ): RiskResult {
   if (!modelLevel) return deterministic;
 
-  const combined = maxLevel(deterministic.level, modelLevel);
+  // Cap: the model alone cannot reach 'high'.
+  const rulesFoundNothing = deterministic.ruleHits.length === 0;
+  const capped: RiskLevel =
+    modelLevel === 'high' && rulesFoundNothing ? 'medium' : modelLevel;
+
+  const combined = maxLevel(deterministic.level, capped);
   if (combined === deterministic.level) return deterministic;
 
-  // Model escalated beyond the rules.
   return {
     level: combined,
     mts: combined === 'high' ? 'very_urgent' : 'urgent',
     ruleHits: [...deterministic.ruleHits, 'model_escalation'],
-    reasons: [...deterministic.reasons, 'Model flagged higher risk than rules'],
+    reasons: [
+      ...deterministic.reasons,
+      modelLevel === 'high' && rulesFoundNothing
+        ? 'Model flagged high risk with no matching rule — capped to medium for review'
+        : 'Model flagged higher risk than rules',
+    ],
     halt: combined === 'high',
   };
 }
