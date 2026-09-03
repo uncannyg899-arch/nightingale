@@ -195,7 +195,7 @@ test('redaction records no original values', () => {
   const { redactions } = redact('my IC is 900101-14-5523');
   for (const r of redactions) {
     assert.equal(
-      (r as Record<string, unknown>).original,
+      (r as unknown as Record<string, unknown>).original,
       undefined,
       'original text must be stripped before storage'
     );
